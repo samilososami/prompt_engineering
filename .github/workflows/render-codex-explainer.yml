@@ -1,0 +1,75 @@
+name: Render Codex explainer
+
+on:
+  push:
+    branches:
+      - tmp/render-codex-video-20260904
+    paths:
+      - '.github/workflows/render-codex-explainer.yml'
+      - 'video/render.py.zlib.b64.part*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out production branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install media dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-inter
+          python -m pip install --upgrade pip
+          python -m pip install pillow numpy pydub edge-tts gTTS
+
+      - name: Reconstruct and verify render engine
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import base64
+          import hashlib
+          import zlib
+
+          source = b''.join(path.read_bytes() for path in sorted(Path('video').glob('render.py.zlib.b64.part*')))
+          payload = zlib.decompress(base64.b64decode(source))
+          digest = hashlib.sha256(payload).hexdigest()
+          expected = 'abdb0081ae18c0e657d826cf677dc868aa8b7a4b6c82dea4da1bdc5a9d7fcd00'
+          if digest != expected:
+              raise SystemExit(f'Render engine checksum mismatch: {digest}')
+          Path('video/render.py').write_bytes(payload)
+          print(f'Reconstructed {len(payload)} bytes, sha256={digest}')
+          PY
+
+      - name: Render narrated 1080p MP4
+        run: python video/render.py
+
+      - name: Inspect final media
+        run: |
+          ffprobe -v error -show_entries format=duration,size:stream=index,codec_name,codec_type,width,height,r_frame_rate,sample_rate,channels -of json video/output/codex-chatgpt-explainer.mp4 | tee video/output/ffprobe.json
+          test -s video/output/codex-chatgpt-explainer.mp4
+
+      - name: Upload downloadable video
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-chatgpt-explainer
+          path: |
+            video/output/codex-chatgpt-explainer.mp4
+            video/output/production-notes.txt
+            video/output/ffprobe.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
